@@ -44,19 +44,22 @@
 static void onenet_upload_entry(void *parameter)
 {
     int value = 0;
+    char text_buf[256];
 
     while (1)
     {
         value = rand() % 100;
 
-        if (onenet_mqtt_upload_digit("temperature", value) < 0)
+        rt_snprintf(text_buf, sizeof(text_buf), "Temperature: %d°C, Status: Normal", value);
+
+        if (onenet_mqtt_upload_string("TEXT", text_buf) < 0)
         {
             LOG_E("upload has an error, stop uploading");
             break;
         }
         else
         {
-            LOG_D("buffer : {\"temperature\":%d}", value);
+            LOG_D("upload TEXT data: %s", text_buf);
         }
 
         rt_thread_delay(rt_tick_from_millisecond(5 * 1000));
@@ -82,6 +85,23 @@ int onenet_upload_cycle(void)
 }
 MSH_CMD_EXPORT(onenet_upload_cycle, send data to OneNET cloud cycle);
 
+int onenet_test_text(void)
+{
+    char test_buf[256];
+    
+    rt_snprintf(test_buf, sizeof(test_buf), "Test Message: Hello OneNET! Time: %d", rt_tick_get());
+    
+    if (onenet_mqtt_upload_string("TEXT", test_buf) < 0)
+    {
+        LOG_E("upload TEXT data has an error!");
+        return -1;
+    }
+    
+    LOG_D("upload TEXT data success: %s", test_buf);
+    return 0;
+}
+MSH_CMD_EXPORT(onenet_test_text, test upload TEXT string data to OneNET);
+
 int onenet_publish_digit(int argc, char **argv)
 {
     if (argc != 3)
@@ -97,7 +117,7 @@ int onenet_publish_digit(int argc, char **argv)
 
     return 0;
 }
-MSH_CMD_EXPORT_ALIAS(onenet_publish_digit, onenet_mqtt_publish_digit, send digit data to onenet cloud);
+MSH_CMD_EXPORT_ALIAS(onenet_publish_digit, onenet_pub_digit, send digit data to onenet cloud);
 
 int onenet_publish_string(int argc, char **argv)
 {
@@ -114,7 +134,7 @@ int onenet_publish_string(int argc, char **argv)
 
     return 0;
 }
-MSH_CMD_EXPORT_ALIAS(onenet_publish_string, onenet_mqtt_publish_string, send string data to onenet cloud);
+MSH_CMD_EXPORT_ALIAS(onenet_publish_string, onenet_pub_string, send string data to onenet cloud);
 
 /* onenet mqtt command response callback function */
 static void onenet_cmd_rsp_cb(uint8_t *recv_data, size_t recv_size, uint8_t **resp_data, size_t *resp_size)

@@ -24,6 +24,7 @@
 #define _ONENET_H_
 
 #include <rtthread.h>
+#include <onenet_port_config.h>
 
 #include <cJSON.h>
 
@@ -48,7 +49,7 @@
 #endif
 
 #define ONENET_SERVER_URL              "tcp://183.230.40.96:1883"
-#define ONENET_INFO_DEVID_LEN          16
+#define ONENET_INFO_DEVID_LEN          32
 #define ONENET_INFO_APIKEY_LEN         32
 #define ONENET_INFO_PROID_LEN          16
 #define ONENET_INFO_AUTH_LEN           300

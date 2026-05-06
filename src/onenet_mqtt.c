@@ -30,6 +30,11 @@
 
 #include <onenet.h>
 
+#ifdef BSP_ONENET_AUTO_INIT
+#include <netdev_ipaddr.h>
+#include <netdev.h>
+#endif
+
 #define DBG_ENABLE
 #define DBG_COLOR
 #define DBG_SECTION_NAME    "onenet.mqtt"
@@ -55,7 +60,13 @@
 #endif
 #endif
 
-#define ONENET_TOPIC_DP "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/post"
+#define ONENET_TOPIC_PROPERTY_POST          "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/post"
+#define ONENET_TOPIC_PROPERTY_POST_REPLY    "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/post/reply"
+#define ONENET_TOPIC_PROPERTY_SET           "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/set"
+#define ONENET_TOPIC_PROPERTY_GET           "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/get"
+#define ONENET_TOPIC_PROPERTY_DESIRED_GET   "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/desired/get/reply"
+#define ONENET_TOPIC_PROPERTY_DESIRED_DELETE "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/desired/delete/reply"
+#define ONENET_TOPIC_OTA_INFORM             "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/ota/inform"
 
 static rt_bool_t init_ok = RT_FALSE;
 static MQTTClient mq_client;
@@ -109,16 +120,54 @@ static void mqtt_connect_callback(MQTTClient *c)
 static void mqtt_online_callback(MQTTClient *c)
 {
     LOG_D("Enter mqtt_online_callback!");
+    LOG_I("OneNET MQTT connected, subscribing topics...");
+
+#ifdef BSP_ONENET_USING_PROPERTY_POST
+    if (paho_mqtt_subscribe(c, QOS1, ONENET_TOPIC_PROPERTY_POST_REPLY, RT_NULL) == 0)
+    {
+        LOG_I("Subscribed: %s", ONENET_TOPIC_PROPERTY_POST_REPLY);
+    }
+#endif
+
+#ifdef BSP_ONENET_USING_PROPERTY_SET
+    if (paho_mqtt_subscribe(c, QOS1, ONENET_TOPIC_PROPERTY_SET, RT_NULL) == 0)
+    {
+        LOG_I("Subscribed: %s", ONENET_TOPIC_PROPERTY_SET);
+    }
+#endif
+
+#ifdef BSP_ONENET_USING_PROPERTY_GET
+    if (paho_mqtt_subscribe(c, QOS1, ONENET_TOPIC_PROPERTY_GET, RT_NULL) == 0)
+    {
+        LOG_I("Subscribed: %s", ONENET_TOPIC_PROPERTY_GET);
+    }
+#endif
+
+#ifdef BSP_ONENET_USING_PROPERTY_DESIRED_GET
+    if (paho_mqtt_subscribe(c, QOS1, ONENET_TOPIC_PROPERTY_DESIRED_GET, RT_NULL) == 0)
+    {
+        LOG_I("Subscribed: %s", ONENET_TOPIC_PROPERTY_DESIRED_GET);
+    }
+#endif
+
+#ifdef BSP_ONENET_USING_PROPERTY_DESIRED_DELETE
+    if (paho_mqtt_subscribe(c, QOS1, ONENET_TOPIC_PROPERTY_DESIRED_DELETE, RT_NULL) == 0)
+    {
+        LOG_I("Subscribed: %s", ONENET_TOPIC_PROPERTY_DESIRED_DELETE);
+    }
+#endif
+
+#ifdef BSP_ONENET_USING_OTA
+    if (paho_mqtt_subscribe(c, QOS1, ONENET_TOPIC_OTA_INFORM, RT_NULL) == 0)
+    {
+        LOG_I("Subscribed: %s", ONENET_TOPIC_OTA_INFORM);
+    }
+#endif
 }
 
 static void mqtt_offline_callback(MQTTClient *c)
 {
     LOG_D("Enter mqtt_offline_callback!");
-}
-
-static void mqtt_usr_callback(MQTTClient *c)
-{
-    LOG_D("Enter mqtt_usr_callback!");
 }
 
 static rt_err_t onenet_mqtt_entry(void)
@@ -148,10 +197,6 @@ static rt_err_t onenet_mqtt_entry(void)
     mq_client.offline_callback = mqtt_offline_callback;
 
     mq_client.defaultMessageHandler = mqtt_callback;
-
-    mq_client.messageHandlers[0].topicFilter = rt_strdup(ONENET_MQTT_SUBTOPIC);
-    mq_client.messageHandlers[0].callback = mqtt_usr_callback;
-    mq_client.messageHandlers[0].qos = QOS1;
 
     paho_mqtt_start(&mq_client);
 
@@ -369,7 +414,7 @@ rt_err_t onenet_mqtt_upload_digit(const char *ds_name, const double digit)
         goto __exit;
     }
 
-    result = onenet_mqtt_publish(ONENET_TOPIC_DP, (uint8_t *)send_buffer, length);
+    result = onenet_mqtt_publish(ONENET_TOPIC_PROPERTY_POST, (uint8_t *)send_buffer, length);
     if (result < 0)
     {
         LOG_E("onenet publish failed (%d)!", result);
@@ -476,7 +521,7 @@ rt_err_t onenet_mqtt_upload_string(const char *ds_name, const char *str)
         goto __exit;
     }
 
-    result = onenet_mqtt_publish(ONENET_TOPIC_DP, (uint8_t *)send_buffer, length);
+    result = onenet_mqtt_publish(ONENET_TOPIC_PROPERTY_POST, (uint8_t *)send_buffer, length);
     if (result < 0)
     {
         LOG_E("onenet mqtt publish digit data failed!");
@@ -596,7 +641,7 @@ rt_err_t onenet_mqtt_upload_bin(const char *ds_name, uint8_t *bin, size_t len)
         goto __exit;
     }
 
-    result = onenet_mqtt_publish(ONENET_TOPIC_DP, send_buffer, length);
+    result = onenet_mqtt_publish(ONENET_TOPIC_PROPERTY_POST, send_buffer, length);
     if (result < 0)
     {
         LOG_E("onenet publish data failed(%d)!", result);
@@ -679,7 +724,7 @@ rt_err_t onenet_mqtt_upload_bin_by_path(const char *ds_name, const char *bin_pat
         goto __exit;
     }
 
-    result = onenet_mqtt_publish(ONENET_TOPIC_DP, send_buffer, length);
+    result = onenet_mqtt_publish(ONENET_TOPIC_PROPERTY_POST, send_buffer, length);
     if (result < 0)
     {
         LOG_E("onenet publish %s data failed(%d)!", bin_path, result);
@@ -705,5 +750,87 @@ __exit:
 #include <finsh.h>
 
 MSH_CMD_EXPORT(onenet_mqtt_init, OneNET cloud mqtt initializate);
+
+#endif
+
+#ifdef BSP_ONENET_AUTO_INIT
+
+#ifndef BSP_ONENET_NETDEV_NAME
+#define BSP_ONENET_NETDEV_NAME "esp0"
+#endif
+
+static rt_thread_t onenet_auto_init_thread = RT_NULL;
+static rt_bool_t onenet_auto_connected = RT_FALSE;
+
+static void onenet_auto_init_entry(void *parameter)
+{
+    struct netdev *netdev = RT_NULL;
+    
+    LOG_I("OneNET auto init thread started, waiting for network device '%s'...", BSP_ONENET_NETDEV_NAME);
+    
+    while (1)
+    {
+        netdev = netdev_get_by_name(BSP_ONENET_NETDEV_NAME);
+        
+        if (netdev != RT_NULL)
+        {
+            if (netdev_is_link_up(netdev))
+            {
+                if (!onenet_auto_connected)
+                {
+                    LOG_I("Network device '%s' is link up, connecting to OneNET MQTT...", BSP_ONENET_NETDEV_NAME);
+                    
+                    if (onenet_mqtt_init() == 0)
+                    {
+                        onenet_auto_connected = RT_TRUE;
+                        LOG_I("OneNET MQTT auto connect success!");
+                    }
+                    else
+                    {
+                        LOG_E("OneNET MQTT auto connect failed!");
+                    }
+                }
+            }
+            else
+            {
+                if (onenet_auto_connected)
+                {
+#ifdef BSP_ONENET_AUTO_RECONNECT
+                    LOG_W("Network device '%s' link down, will reconnect when link up", BSP_ONENET_NETDEV_NAME);
+#endif
+                    onenet_auto_connected = RT_FALSE;
+                }
+            }
+        }
+        else
+        {
+            LOG_D("Network device '%s' not found, waiting...", BSP_ONENET_NETDEV_NAME);
+        }
+        
+        rt_thread_mdelay(1000);
+    }
+}
+
+static int onenet_auto_init(void)
+{
+    onenet_auto_init_thread = rt_thread_create("onenet_auto",
+                                                onenet_auto_init_entry,
+                                                RT_NULL,
+                                                2048,
+                                                RT_THREAD_PRIORITY_MAX / 2,
+                                                20);
+    
+    if (onenet_auto_init_thread != RT_NULL)
+    {
+        rt_thread_startup(onenet_auto_init_thread);
+        LOG_I("OneNET auto init thread created");
+        return 0;
+    }
+    
+    LOG_E("OneNET auto init thread create failed!");
+    return -1;
+}
+
+INIT_APP_EXPORT(onenet_auto_init);
 
 #endif
