@@ -6,10 +6,12 @@ src = []
 if GetDepend(['PKG_USING_ONENET_SAMPLE']):
     src += Glob('samples/onenet_sample.c')
 
-if GetDepend(['ONENET_USING_MQTT']):
+if GetDepend(['BSP_ONENET_USING_MQTT']):
     src += Glob('src/onenet_mqtt.c')
 
-if GetDepend(['ONENET_USING_AUTO_REGISTER'] or ['ONENET_USING_HTTP']):
+src += Glob('src/onenet_reply.c')
+
+if GetDepend(['BSP_ONENET_USING_AUTO_REGISTER']) or GetDepend(['BSP_ONENET_USING_HTTP']):
     src += Glob('src/onenet_http.c')
 
 path = [cwd + '/inc']

@@ -40,6 +40,18 @@
 #define ONENET_INFO_PROID BSP_ONENET_INFO_PROID
 #endif
 
+#ifdef BSP_ONENET_AUTO_REPLY_SET
+#define ONENET_AUTO_REPLY_SET
+#endif
+
+#ifdef BSP_ONENET_AUTO_REPLY_GET
+#define ONENET_AUTO_REPLY_GET
+#endif
+
+#ifdef BSP_ONENET_AUTO_REPLY_OTA
+#define ONENET_AUTO_REPLY_OTA
+#endif
+
 #endif
 
 #endif

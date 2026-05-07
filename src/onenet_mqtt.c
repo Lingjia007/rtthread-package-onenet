@@ -29,6 +29,7 @@
 #include <paho_mqtt.h>
 
 #include <onenet.h>
+#include <onenet_reply.h>
 
 #ifdef BSP_ONENET_AUTO_INIT
 #include <netdev_ipaddr.h>
@@ -63,10 +64,21 @@
 #define ONENET_TOPIC_PROPERTY_POST          "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/post"
 #define ONENET_TOPIC_PROPERTY_POST_REPLY    "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/post/reply"
 #define ONENET_TOPIC_PROPERTY_SET           "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/set"
+#define ONENET_TOPIC_PROPERTY_SET_REPLY     "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/set_reply"
 #define ONENET_TOPIC_PROPERTY_GET           "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/get"
+#define ONENET_TOPIC_PROPERTY_GET_REPLY     "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/get_reply"
 #define ONENET_TOPIC_PROPERTY_DESIRED_GET   "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/desired/get/reply"
 #define ONENET_TOPIC_PROPERTY_DESIRED_DELETE "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/thing/property/desired/delete/reply"
 #define ONENET_TOPIC_OTA_INFORM             "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/ota/inform"
+#define ONENET_TOPIC_OTA_INFORM_REPLY       "$sys/" ONENET_INFO_PROID "/" ONENET_INFO_DEVID "/ota/inform_reply"
+
+#define ONENET_REPLY_BUF_SIZE              256
+
+static char reply_topic_buf[80];
+static char reply_data_buf[ONENET_REPLY_BUF_SIZE];
+static size_t reply_data_len = 0;
+static rt_sem_t reply_sem = RT_NULL;
+static rt_thread_t reply_thread = RT_NULL;
 
 static rt_bool_t init_ok = RT_FALSE;
 static MQTTClient mq_client;
@@ -80,18 +92,113 @@ struct onenet_device
 
 } onenet_mqtt;
 
+static onenet_reply_type_t onenet_get_reply_type(const char *topic, size_t topic_len)
+{
+    if (strstr(topic, "/thing/property/set"))
+    {
+        return ONENET_REPLY_TYPE_PROPERTY_SET;
+    }
+    else if (strstr(topic, "/thing/property/get"))
+    {
+        return ONENET_REPLY_TYPE_PROPERTY_GET;
+    }
+    else if (strstr(topic, "/ota/inform"))
+    {
+        return ONENET_REPLY_TYPE_OTA_INFORM;
+    }
+    else if (strstr(topic, "/thing/property/post/reply"))
+    {
+        return ONENET_REPLY_TYPE_PROPERTY_POST_REPLY;
+    }
+    else if (strstr(topic, "/thing/property/desired/get/reply"))
+    {
+        return ONENET_REPLY_TYPE_PROPERTY_DESIRED_GET;
+    }
+    else if (strstr(topic, "/thing/property/desired/delete/reply"))
+    {
+        return ONENET_REPLY_TYPE_PROPERTY_DESIRED_DELETE;
+    }
+    return ONENET_REPLY_TYPE_PROPERTY_SET;
+}
+
+static void onenet_reply_thread_entry(void *parameter)
+{
+    LOG_I("Reply worker thread started");
+
+    while (1)
+    {
+        rt_sem_take(reply_sem, RT_WAITING_FOREVER);
+
+        rt_thread_mdelay(200);
+
+        if (reply_data_len > 0)
+        {
+            reply_data_buf[reply_data_len] = '\0';
+            LOG_I("Reply publish to: %s, len: %d", reply_topic_buf, reply_data_len);
+            if (paho_mqtt_publish(&mq_client, QOS1, reply_topic_buf, reply_data_buf) != PAHO_SUCCESS)
+            {
+                LOG_E("Reply publish failed!");
+            }
+            else
+            {
+                LOG_I("Reply publish success");
+            }
+            reply_data_len = 0;
+        }
+    }
+}
+
+static rt_err_t onenet_mqtt_send_async(const char *topic, uint8_t *data, size_t data_len)
+{
+    if (reply_sem == RT_NULL)
+    {
+        LOG_E("Reply sem is NULL!");
+        ONENET_FREE(data);
+        return -RT_ERROR;
+    }
+
+    if (data_len > ONENET_REPLY_BUF_SIZE)
+    {
+        LOG_E("Reply data too large: %d > %d", data_len, ONENET_REPLY_BUF_SIZE);
+        ONENET_FREE(data);
+        return -RT_ERROR;
+    }
+
+    strncpy(reply_topic_buf, topic, sizeof(reply_topic_buf) - 1);
+    reply_topic_buf[sizeof(reply_topic_buf) - 1] = '\0';
+    memcpy(reply_data_buf, data, data_len);
+    reply_data_len = data_len;
+
+    ONENET_FREE(data);
+
+    LOG_I("Signal reply thread for: %s", topic);
+    rt_sem_release(reply_sem);
+
+    return RT_EOK;
+}
+
 static void mqtt_callback(MQTTClient *c, MessageData *msg_data)
 {
     size_t res_len = 0;
     uint8_t *response_buf = RT_NULL;
-    char topicname[45] = { "$crsp/" };
+    char topicname[80] = { 0 };
+    onenet_reply_type_t reply_type;
+    char *topic_str = RT_NULL;
 
     RT_ASSERT(c);
     RT_ASSERT(msg_data);
 
-    LOG_D("topic %.*s receive a message", msg_data->topicName->lenstring.len, msg_data->topicName->lenstring.data);
+    topic_str = (char *)ONENET_MALLOC(msg_data->topicName->lenstring.len + 1);
+    if (topic_str)
+    {
+        strncpy(topic_str, msg_data->topicName->lenstring.data, msg_data->topicName->lenstring.len);
+        topic_str[msg_data->topicName->lenstring.len] = '\0';
+    }
 
+    LOG_D("topic %.*s receive a message", msg_data->topicName->lenstring.len, msg_data->topicName->lenstring.data);
     LOG_D("message length is %d", msg_data->message->payloadlen);
+
+    reply_type = onenet_get_reply_type(msg_data->topicName->lenstring.data, msg_data->topicName->lenstring.len);
 
     if (onenet_mqtt.cmd_rsp_cb != RT_NULL)
     {
@@ -100,16 +207,60 @@ static void mqtt_callback(MQTTClient *c, MessageData *msg_data)
 
         if (response_buf != RT_NULL || res_len != 0)
         {
-            strncat(topicname, &(msg_data->topicName->lenstring.data[6]), msg_data->topicName->lenstring.len - 6);
+            snprintf(topicname, sizeof(topicname), "$crsp/%s", topic_str ? topic_str : "");
 
-            onenet_mqtt_publish(topicname, response_buf, strlen((const char *)response_buf));
-
-            ONENET_FREE(response_buf);
-
+            onenet_mqtt_send_async(topicname, response_buf, strlen((const char *)response_buf));
         }
+    }
+    else
+    {
+#ifdef BSP_ONENET_AUTO_REPLY_SET
+        if (reply_type == ONENET_REPLY_TYPE_PROPERTY_SET)
+        {
+            onenet_reply_process(reply_type, topic_str, 
+                               (uint8_t *)msg_data->message->payload, msg_data->message->payloadlen,
+                               &response_buf, &res_len);
+            
+            if (response_buf != RT_NULL && res_len != 0)
+            {
+                onenet_mqtt_send_async(ONENET_TOPIC_PROPERTY_SET_REPLY, response_buf, res_len);
+            }
+        }
+#endif
 
+#ifdef BSP_ONENET_AUTO_REPLY_GET
+        if (reply_type == ONENET_REPLY_TYPE_PROPERTY_GET)
+        {
+            onenet_reply_process(reply_type, topic_str,
+                               (uint8_t *)msg_data->message->payload, msg_data->message->payloadlen,
+                               &response_buf, &res_len);
+            
+            if (response_buf != RT_NULL && res_len != 0)
+            {
+                onenet_mqtt_send_async(ONENET_TOPIC_PROPERTY_GET_REPLY, response_buf, res_len);
+            }
+        }
+#endif
+
+#ifdef BSP_ONENET_AUTO_REPLY_OTA
+        if (reply_type == ONENET_REPLY_TYPE_OTA_INFORM)
+        {
+            onenet_reply_process(reply_type, topic_str,
+                               (uint8_t *)msg_data->message->payload, msg_data->message->payloadlen,
+                               &response_buf, &res_len);
+            
+            if (response_buf != RT_NULL && res_len != 0)
+            {
+                onenet_mqtt_send_async(ONENET_TOPIC_OTA_INFORM_REPLY, response_buf, res_len);
+            }
+        }
+#endif
     }
 
+    if (topic_str)
+    {
+        ONENET_FREE(topic_str);
+    }
 }
 
 static void mqtt_connect_callback(MQTTClient *c)
@@ -274,6 +425,31 @@ int onenet_mqtt_init(void)
 
     onenet_mqtt.onenet_info = &onenet_info;
     onenet_mqtt.cmd_rsp_cb = RT_NULL;
+
+    onenet_reply_init();
+
+    reply_sem = rt_sem_create("onenet_sem", 0, RT_IPC_FLAG_PRIO);
+    if (reply_sem == RT_NULL)
+    {
+        LOG_E("Failed to create reply semaphore!");
+        result = -3;
+        goto __exit;
+    }
+
+    reply_thread = rt_thread_create("onenet_rpl",
+                                    onenet_reply_thread_entry,
+                                    RT_NULL,
+                                    2048,
+                                    RT_THREAD_PRIORITY_MAX / 3,
+                                    10);
+    if (reply_thread == RT_NULL)
+    {
+        LOG_E("Failed to create reply thread!");
+        result = -4;
+        goto __exit;
+    }
+    rt_thread_startup(reply_thread);
+    LOG_I("Reply worker thread created");
 
     if (onenet_mqtt_entry() < 0)
     {

@@ -159,4 +159,131 @@ int onenet_set_cmd_rsp(int argc, char **argv)
 }
 MSH_CMD_EXPORT(onenet_set_cmd_rsp, set cmd response function);
 
+static int led_status = 0;
+static char firmware_version[64] = "1.0.0";
+static char rtc_time[64] = "2024-01-01 00:00:00";
+static char text_display[256] = "Hello OneNET";
+
+static rt_err_t onenet_property_set_handler(const char *identifier, cJSON *value)
+{
+    if (strcmp(identifier, "BSP_LED") == 0)
+    {
+        if (cJSON_IsBool(value))
+        {
+            led_status = cJSON_IsTrue(value) ? 1 : 0;
+            LOG_I("BSP_LED set to: %d", led_status);
+            return RT_EOK;
+        }
+        else if (cJSON_IsNumber(value))
+        {
+            led_status = value->valueint;
+            LOG_I("BSP_LED set to: %d", led_status);
+            return RT_EOK;
+        }
+    }
+    else if (strcmp(identifier, "FIRMWARE_VERSION") == 0)
+    {
+        if (cJSON_IsString(value))
+        {
+            strncpy(firmware_version, value->valuestring, sizeof(firmware_version) - 1);
+            LOG_I("FIRMWARE_VERSION set to: %s", firmware_version);
+            return RT_EOK;
+        }
+    }
+    else if (strcmp(identifier, "RTC_TIME") == 0)
+    {
+        if (cJSON_IsString(value))
+        {
+            strncpy(rtc_time, value->valuestring, sizeof(rtc_time) - 1);
+            LOG_I("RTC_TIME set to: %s", rtc_time);
+            return RT_EOK;
+        }
+    }
+    else if (strcmp(identifier, "TEXT") == 0)
+    {
+        if (cJSON_IsString(value))
+        {
+            strncpy(text_display, value->valuestring, sizeof(text_display) - 1);
+            LOG_I("TEXT set to: %s", text_display);
+            return RT_EOK;
+        }
+    }
+    
+    LOG_W("Unknown property or invalid type: %s", identifier);
+    return -RT_ERROR;
+}
+
+static cJSON *onenet_property_get_handler(const char *identifier)
+{
+    cJSON *value = RT_NULL;
+    
+    if (identifier == RT_NULL)
+    {
+        cJSON *params = cJSON_CreateObject();
+        cJSON_AddBoolToObject(params, "BSP_LED", led_status ? 1 : 0);
+        cJSON_AddStringToObject(params, "FIRMWARE_VERSION", firmware_version);
+        cJSON_AddStringToObject(params, "RTC_TIME", rtc_time);
+        cJSON_AddStringToObject(params, "TEXT", text_display);
+        return params;
+    }
+    
+    if (strcmp(identifier, "BSP_LED") == 0)
+    {
+        value = cJSON_CreateBool(led_status ? 1 : 0);
+    }
+    else if (strcmp(identifier, "FIRMWARE_VERSION") == 0)
+    {
+        value = cJSON_CreateString(firmware_version);
+    }
+    else if (strcmp(identifier, "RTC_TIME") == 0)
+    {
+        value = cJSON_CreateString(rtc_time);
+    }
+    else if (strcmp(identifier, "TEXT") == 0)
+    {
+        value = cJSON_CreateString(text_display);
+    }
+    else
+    {
+        LOG_W("Unknown property: %s", identifier);
+    }
+    
+    return value;
+}
+
+static rt_err_t onenet_ota_inform_handler(const char *version, const char *url)
+{
+    LOG_I("OTA inform received - version: %s, url: %s", 
+          version ? version : "unknown", 
+          url ? url : "none");
+    return RT_EOK;
+}
+
+int onenet_register_property_callbacks(void)
+{
+    onenet_reply_register_set_cb(onenet_property_set_handler);
+    onenet_reply_register_get_cb(onenet_property_get_handler);
+    onenet_reply_register_ota_cb(onenet_ota_inform_handler);
+    
+    LOG_I("Property callbacks registered");
+    return 0;
+}
+MSH_CMD_EXPORT(onenet_register_property_callbacks, register property callbacks for auto reply);
+
+int onenet_test_reply(void)
+{
+    char *response = RT_NULL;
+    const char *test_id = "123";
+    
+    response = onenet_reply_build_response(test_id, ONENET_REPLY_SUCCESS, ONENET_REPLY_MSG_SUCCESS);
+    if (response)
+    {
+        LOG_I("Test response: %s", response);
+        cJSON_free(response);
+    }
+    
+    return 0;
+}
+MSH_CMD_EXPORT(onenet_test_reply, test reply response builder);
+
 #endif /* FINSH_USING_MSH */

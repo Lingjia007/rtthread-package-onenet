@@ -125,6 +125,8 @@ cJSON *onenet_get_dp_by_start_duration(char *ds_name, uint32_t start, size_t dur
 /* Set the command response callback function. User needs to malloc memory for response data. */
 void onenet_set_cmd_rsp_cb(void(*cmd_rsp_cb)(uint8_t *recv_data, size_t recv_size, uint8_t **resp_data, size_t *resp_size));
 
+#include <onenet_reply.h>
+
 /* ========================== User port function ============================ */
 #ifdef ONENET_USING_AUTO_REGISTER
 /* Save device info. */
