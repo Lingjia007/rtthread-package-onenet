@@ -177,6 +177,25 @@ static rt_err_t onenet_mqtt_send_async(const char *topic, uint8_t *data, size_t 
     return RT_EOK;
 }
 
+typedef struct {
+    onenet_reply_type_t type;
+    const char *reply_topic;
+} onenet_reply_config_t;
+
+static const onenet_reply_config_t reply_config_table[] = {
+#ifdef BSP_ONENET_AUTO_REPLY_SET
+    { ONENET_REPLY_TYPE_PROPERTY_SET, ONENET_TOPIC_PROPERTY_SET_REPLY },
+#endif
+#ifdef BSP_ONENET_AUTO_REPLY_GET
+    { ONENET_REPLY_TYPE_PROPERTY_GET, ONENET_TOPIC_PROPERTY_GET_REPLY },
+#endif
+#ifdef BSP_ONENET_AUTO_REPLY_OTA
+    { ONENET_REPLY_TYPE_OTA_INFORM, ONENET_TOPIC_OTA_INFORM_REPLY },
+#endif
+};
+
+#define REPLY_CONFIG_TABLE_SIZE (sizeof(reply_config_table) / sizeof(reply_config_table[0]))
+
 static void mqtt_callback(MQTTClient *c, MessageData *msg_data)
 {
     size_t res_len = 0;
@@ -184,6 +203,7 @@ static void mqtt_callback(MQTTClient *c, MessageData *msg_data)
     char topicname[80] = { 0 };
     onenet_reply_type_t reply_type;
     char *topic_str = RT_NULL;
+    size_t i;
 
     RT_ASSERT(c);
     RT_ASSERT(msg_data);
@@ -214,47 +234,21 @@ static void mqtt_callback(MQTTClient *c, MessageData *msg_data)
     }
     else
     {
-#ifdef BSP_ONENET_AUTO_REPLY_SET
-        if (reply_type == ONENET_REPLY_TYPE_PROPERTY_SET)
+        for (i = 0; i < REPLY_CONFIG_TABLE_SIZE; i++)
         {
-            onenet_reply_process(reply_type, topic_str, 
-                               (uint8_t *)msg_data->message->payload, msg_data->message->payloadlen,
-                               &response_buf, &res_len);
-            
-            if (response_buf != RT_NULL && res_len != 0)
+            if (reply_type == reply_config_table[i].type)
             {
-                onenet_mqtt_send_async(ONENET_TOPIC_PROPERTY_SET_REPLY, response_buf, res_len);
+                onenet_reply_process(reply_type, topic_str,
+                                   (uint8_t *)msg_data->message->payload, msg_data->message->payloadlen,
+                                   &response_buf, &res_len);
+                
+                if (response_buf != RT_NULL && res_len != 0)
+                {
+                    onenet_mqtt_send_async(reply_config_table[i].reply_topic, response_buf, res_len);
+                }
+                break;
             }
         }
-#endif
-
-#ifdef BSP_ONENET_AUTO_REPLY_GET
-        if (reply_type == ONENET_REPLY_TYPE_PROPERTY_GET)
-        {
-            onenet_reply_process(reply_type, topic_str,
-                               (uint8_t *)msg_data->message->payload, msg_data->message->payloadlen,
-                               &response_buf, &res_len);
-            
-            if (response_buf != RT_NULL && res_len != 0)
-            {
-                onenet_mqtt_send_async(ONENET_TOPIC_PROPERTY_GET_REPLY, response_buf, res_len);
-            }
-        }
-#endif
-
-#ifdef BSP_ONENET_AUTO_REPLY_OTA
-        if (reply_type == ONENET_REPLY_TYPE_OTA_INFORM)
-        {
-            onenet_reply_process(reply_type, topic_str,
-                               (uint8_t *)msg_data->message->payload, msg_data->message->payloadlen,
-                               &response_buf, &res_len);
-            
-            if (response_buf != RT_NULL && res_len != 0)
-            {
-                onenet_mqtt_send_async(ONENET_TOPIC_OTA_INFORM_REPLY, response_buf, res_len);
-            }
-        }
-#endif
     }
 
     if (topic_str)
@@ -501,7 +495,13 @@ rt_err_t onenet_mqtt_publish(const char *topic, const uint8_t *msg, size_t len)
     return 0;
 }
 
-static rt_err_t onenet_mqtt_get_digit_data(const char *ds_name, const double digit, char **out_buff, size_t *length)
+typedef enum {
+    ONENET_DATA_TYPE_DIGIT,
+    ONENET_DATA_TYPE_STRING
+} onenet_data_type_t;
+
+static rt_err_t onenet_mqtt_get_data(const char *ds_name, onenet_data_type_t type,
+                                      const void *value, char **out_buff, size_t *length)
 {
     rt_err_t result = RT_EOK;
     cJSON *root = RT_NULL;
@@ -510,6 +510,7 @@ static rt_err_t onenet_mqtt_get_digit_data(const char *ds_name, const double dig
     char *msg_str = RT_NULL;
 
     RT_ASSERT(ds_name);
+    RT_ASSERT(value);
     RT_ASSERT(out_buff);
     RT_ASSERT(length);
 
@@ -519,27 +520,27 @@ static rt_err_t onenet_mqtt_get_digit_data(const char *ds_name, const double dig
 
     if (!root)
     {
-        LOG_E("MQTT publish digit data failed! cJSON create object error return NULL!");
+        LOG_E("MQTT publish data failed! cJSON create object error!");
         return -RT_ENOMEM;
     }
 
-    /*  add a key-value pair with the key "id" and a string value to the root object */
     cJSON_AddItemToObject(root, "id", cJSON_CreateString("123"));
-
-    /*  add the params object to the root object with the key "params" */
     cJSON_AddItemToObject(root, "params", params);
-
-    /*  add the temp object to the params object with the key ds_name */
     cJSON_AddItemToObject(params, ds_name, temp);
 
-    /*  add a key-value pair with the key "value" and a digit value to the temp object */
-    cJSON_AddNumberToObject(temp, "value", digit);
+    if (type == ONENET_DATA_TYPE_DIGIT)
+    {
+        cJSON_AddNumberToObject(temp, "value", *(const double *)value);
+    }
+    else
+    {
+        cJSON_AddStringToObject(temp, "value", (const char *)value);
+    }
 
-    /* render a cJSON structure to buffer */
     msg_str = cJSON_PrintUnformatted(root);
     if (!msg_str)
     {
-        LOG_E("MQTT publish digit data failed! cJSON print unformatted error return NULL!");
+        LOG_E("MQTT publish data failed! cJSON print error!");
         result = -RT_ENOMEM;
         goto __exit;
     }
@@ -547,168 +548,68 @@ static rt_err_t onenet_mqtt_get_digit_data(const char *ds_name, const double dig
     *out_buff = ONENET_MALLOC(strlen(msg_str));
     if (!(*out_buff))
     {
-        LOG_E("ONENET mqtt upload digit data failed! No memory for send buffer!");
-        return -RT_ENOMEM;
+        LOG_E("ONENET mqtt upload data failed! No memory for send buffer!");
+        result = -RT_ENOMEM;
+        goto __exit;
     }
 
-    strncpy(&(*out_buff)[0], msg_str, strlen(msg_str));
+    strncpy(*out_buff, msg_str, strlen(msg_str));
     *length = strlen(msg_str);
 
 __exit:
-    if (root)
-    {
-        cJSON_Delete(root);
-    }
-    if (msg_str)
-    {
-        cJSON_free(msg_str);
-    }
+    if (root) cJSON_Delete(root);
+    if (msg_str) cJSON_free(msg_str);
 
     return result;
 }
 
-/**
- * Upload digit data to OneNET cloud.
- *
- * @param   ds_name     datastream name
- * @param   digit       digit data
- *
- * @return  0 : upload digit data success
- *         -5 : no memory
- */
 rt_err_t onenet_mqtt_upload_digit(const char *ds_name, const double digit)
 {
     char *send_buffer = RT_NULL;
-    rt_err_t result = RT_EOK;
     size_t length = 0;
+    rt_err_t result;
 
     RT_ASSERT(ds_name);
 
-    result = onenet_mqtt_get_digit_data(ds_name, digit, &send_buffer, &length);
+    result = onenet_mqtt_get_data(ds_name, ONENET_DATA_TYPE_DIGIT, &digit, &send_buffer, &length);
     if (result < 0)
     {
-        goto __exit;
+        return result;
     }
 
     result = onenet_mqtt_publish(ONENET_TOPIC_PROPERTY_POST, (uint8_t *)send_buffer, length);
     if (result < 0)
     {
         LOG_E("onenet publish failed (%d)!", result);
-        goto __exit;
     }
 
-__exit:
-    if (send_buffer)
-    {
-        ONENET_FREE(send_buffer);
-    }
+    if (send_buffer) ONENET_FREE(send_buffer);
 
     return result;
 }
 
-static rt_err_t onenet_mqtt_get_string_data(const char *ds_name, const char *str, char **out_buff, size_t *length)
-{
-    rt_err_t result = RT_EOK;
-    cJSON *root = RT_NULL;
-    cJSON *params = RT_NULL;
-    cJSON *temp = RT_NULL;
-    char *msg_str = RT_NULL;
-
-    RT_ASSERT(ds_name);
-    RT_ASSERT(str);
-    RT_ASSERT(out_buff);
-    RT_ASSERT(length);
-
-    root = cJSON_CreateObject();
-    params = cJSON_CreateObject();
-    temp = cJSON_CreateObject();
-
-    if (!root)
-    {
-        LOG_E("MQTT publish string data failed! cJSON create object error return NULL!");
-        return -RT_ENOMEM;
-    }
-
-    /*  add a key-value pair with the key "id" and a string value to the root object */
-    cJSON_AddItemToObject(root, "id", cJSON_CreateString("123"));
-
-    /*  add the params object to the root object with the key "params" */
-    cJSON_AddItemToObject(root, "params", params);
-
-    /*  add the temp object to the params object with the key ds_name */
-    cJSON_AddItemToObject(params, ds_name, temp);
-
-    /*  add a key-value pair with the key "value" and a digit value to the temp object */
-    cJSON_AddStringToObject(temp, "value", str);
-
-    /* render a cJSON structure to buffer */
-    msg_str = cJSON_PrintUnformatted(root);
-    if (!msg_str)
-    {
-        LOG_E("MQTT publish string data failed! cJSON print unformatted error return NULL!");
-        result = -RT_ENOMEM;
-        goto __exit;
-    }
-
-    *out_buff = ONENET_MALLOC(strlen(msg_str));
-    if (!(*out_buff))
-    {
-        LOG_E("ONENET mqtt upload string data failed! No memory for send buffer!");
-        return -RT_ENOMEM;
-    }
-
-    strncpy(&(*out_buff)[0], msg_str, strlen(msg_str));
-    *length = strlen(msg_str);
-
-__exit:
-    if (root)
-    {
-        cJSON_Delete(root);
-    }
-    if (msg_str)
-    {
-        cJSON_free(msg_str);
-    }
-
-    return result;
-}
-
-/**
- * upload string data to OneNET cloud.
- *
- * @param   ds_name     datastream name
- * @param   str         string data
- *
- * @return  0 : upload digit data success
- *         -5 : no memory
- */
 rt_err_t onenet_mqtt_upload_string(const char *ds_name, const char *str)
 {
     char *send_buffer = RT_NULL;
-    rt_err_t result = RT_EOK;
     size_t length = 0;
+    rt_err_t result;
 
     RT_ASSERT(ds_name);
     RT_ASSERT(str);
 
-    result = onenet_mqtt_get_string_data(ds_name, str, &send_buffer, &length);
+    result = onenet_mqtt_get_data(ds_name, ONENET_DATA_TYPE_STRING, str, &send_buffer, &length);
     if (result < 0)
     {
-        goto __exit;
+        return result;
     }
 
     result = onenet_mqtt_publish(ONENET_TOPIC_PROPERTY_POST, (uint8_t *)send_buffer, length);
     if (result < 0)
     {
-        LOG_E("onenet mqtt publish digit data failed!");
-        goto __exit;
+        LOG_E("onenet mqtt publish string data failed!");
     }
 
-__exit:
-    if (send_buffer)
-    {
-        ONENET_FREE(send_buffer);
-    }
+    if (send_buffer) ONENET_FREE(send_buffer);
 
     return result;
 }

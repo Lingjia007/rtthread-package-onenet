@@ -22,16 +22,32 @@ typedef enum
     ONENET_REPLY_TYPE_PROPERTY_DESIRED_DELETE,
 } onenet_reply_type_t;
 
+typedef enum
+{
+    ONENET_TYPE_INT32,
+    ONENET_TYPE_INT64,
+    ONENET_TYPE_FLOAT,
+    ONENET_TYPE_DOUBLE,
+    ONENET_TYPE_DATE,
+    ONENET_TYPE_BOOL,
+    ONENET_TYPE_STRING,
+    ONENET_TYPE_ENUM,
+} onenet_property_type_t;
+
 typedef struct onenet_property_value
 {
     const char *identifier;
-    int type;
+    onenet_property_type_t type;
     union
     {
-        int int_value;
+        rt_int32_t int32_value;
+        rt_int64_t int64_value;
+        float float_value;
         double double_value;
-        char *string_value;
+        rt_int64_t date_value;
         rt_bool_t bool_value;
+        char *string_value;
+        rt_int32_t enum_value;
     } value;
 } onenet_property_value_t;
 
@@ -55,5 +71,8 @@ char *onenet_reply_build_get_response(const char *id, int code, const char *msg,
 
 void onenet_reply_process(onenet_reply_type_t type, const char *topic, const uint8_t *payload, size_t payload_len,
                           uint8_t **resp_data, size_t *resp_size);
+
+rt_bool_t onenet_parse_value(cJSON *json, onenet_property_value_t *prop);
+cJSON *onenet_create_value(onenet_property_value_t *prop);
 
 #endif

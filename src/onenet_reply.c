@@ -23,6 +23,13 @@ static onenet_property_set_cb property_set_cb = RT_NULL;
 static onenet_property_get_cb property_get_cb = RT_NULL;
 static onenet_ota_inform_cb ota_inform_cb = RT_NULL;
 
+typedef struct {
+    cJSON *root;
+    const char *msg_id;
+    int code;
+    const char *msg;
+} onenet_parse_ctx_t;
+
 void onenet_reply_init(void)
 {
     if (reply_mutex == RT_NULL)
@@ -151,35 +158,70 @@ char *onenet_reply_build_get_response(const char *id, int code, const char *msg,
     return resp_str;
 }
 
+static rt_bool_t onenet_parse_request(const uint8_t *payload, size_t payload_len,
+                                       onenet_parse_ctx_t *ctx, const char *type_name)
+{
+    ctx->root = cJSON_ParseWithLength((const char *)payload, payload_len);
+    if (!ctx->root)
+    {
+        LOG_E("Failed to parse %s JSON", type_name);
+        ctx->code = ONENET_REPLY_FAIL;
+        ctx->msg = ONENET_REPLY_MSG_FAIL;
+        ctx->msg_id = "0";
+        return RT_FALSE;
+    }
+
+    cJSON *id_item = cJSON_GetObjectItem(ctx->root, "id");
+    ctx->msg_id = (id_item && cJSON_IsString(id_item)) ? id_item->valuestring : "0";
+    ctx->code = ONENET_REPLY_SUCCESS;
+    ctx->msg = ONENET_REPLY_MSG_SUCCESS;
+
+    return RT_TRUE;
+}
+
+static uint8_t *onenet_build_response_buffer(const char *msg_id, int code, const char *msg,
+                                              cJSON *data, size_t *resp_size)
+{
+    char *resp_str = RT_NULL;
+    uint8_t *resp_data = RT_NULL;
+
+    if (data)
+    {
+        resp_str = onenet_reply_build_get_response(msg_id, code, msg, data);
+    }
+    else
+    {
+        resp_str = onenet_reply_build_response(msg_id, code, msg);
+    }
+
+    if (resp_str)
+    {
+        resp_data = (uint8_t *)ONENET_MALLOC(strlen(resp_str) + 1);
+        if (resp_data)
+        {
+            strcpy((char *)resp_data, resp_str);
+            *resp_size = strlen(resp_str);
+        }
+        cJSON_free(resp_str);
+    }
+
+    return resp_data;
+}
+
 static void onenet_reply_handle_property_set(const uint8_t *payload, size_t payload_len,
                                              uint8_t **resp_data, size_t *resp_size)
 {
-    cJSON *root = RT_NULL;
-    cJSON *id_item = RT_NULL;
+    onenet_parse_ctx_t ctx = {0};
     cJSON *params = RT_NULL;
-    char *resp_str = RT_NULL;
-    const char *msg_id = "0";
-    int code = ONENET_REPLY_SUCCESS;
-    const char *msg = ONENET_REPLY_MSG_SUCCESS;
 
     LOG_I("Property set request: %.*s", (int)payload_len, payload);
 
-    root = cJSON_ParseWithLength((const char *)payload, payload_len);
-    if (!root)
+    if (!onenet_parse_request(payload, payload_len, &ctx, "property set"))
     {
-        LOG_E("Failed to parse property set JSON");
-        code = ONENET_REPLY_FAIL;
-        msg = ONENET_REPLY_MSG_FAIL;
         goto build_response;
     }
 
-    id_item = cJSON_GetObjectItem(root, "id");
-    if (id_item && cJSON_IsString(id_item))
-    {
-        msg_id = id_item->valuestring;
-    }
-
-    params = cJSON_GetObjectItem(root, "params");
+    params = cJSON_GetObjectItem(ctx.root, "params");
     if (params && cJSON_IsObject(params))
     {
         cJSON *item = RT_NULL;
@@ -191,8 +233,8 @@ static void onenet_reply_handle_property_set(const uint8_t *payload, size_t payl
             if (ret != RT_EOK)
             {
                 LOG_W("Failed to set property: %s", identifier);
-                code = ONENET_REPLY_FAIL;
-                msg = ONENET_REPLY_MSG_FAIL;
+                ctx.code = ONENET_REPLY_FAIL;
+                ctx.msg = ONENET_REPLY_MSG_FAIL;
             }
             else
             {
@@ -203,61 +245,32 @@ static void onenet_reply_handle_property_set(const uint8_t *payload, size_t payl
     else
     {
         LOG_E("No params in property set message");
-        code = ONENET_REPLY_FAIL;
-        msg = ONENET_REPLY_MSG_FAIL;
+        ctx.code = ONENET_REPLY_FAIL;
+        ctx.msg = ONENET_REPLY_MSG_FAIL;
     }
 
 build_response:
-    resp_str = onenet_reply_build_response(msg_id, code, msg);
-    if (root)
-    {
-        cJSON_Delete(root);
-    }
-
-    if (resp_str)
-    {
-        *resp_data = (uint8_t *)ONENET_MALLOC(strlen(resp_str) + 1);
-        if (*resp_data)
-        {
-            strcpy((char *)*resp_data, resp_str);
-            *resp_size = strlen(resp_str);
-        }
-        cJSON_free(resp_str);
-    }
+    *resp_data = onenet_build_response_buffer(ctx.msg_id, ctx.code, ctx.msg, RT_NULL, resp_size);
+    if (ctx.root) cJSON_Delete(ctx.root);
 }
 
 static void onenet_reply_handle_property_get(const uint8_t *payload, size_t payload_len,
                                              uint8_t **resp_data, size_t *resp_size)
 {
-    cJSON *root = RT_NULL;
-    cJSON *id_item = RT_NULL;
+    onenet_parse_ctx_t ctx = {0};
     cJSON *params = RT_NULL;
     cJSON *result_params = RT_NULL;
-    char *resp_str = RT_NULL;
-    const char *msg_id = "0";
-    int code = ONENET_REPLY_SUCCESS;
-    const char *msg = ONENET_REPLY_MSG_SUCCESS;
 
     LOG_I("Property get request: %.*s", (int)payload_len, payload);
 
-    root = cJSON_ParseWithLength((const char *)payload, payload_len);
-    if (!root)
+    if (!onenet_parse_request(payload, payload_len, &ctx, "property get"))
     {
-        LOG_E("Failed to parse property get JSON");
-        code = ONENET_REPLY_FAIL;
-        msg = ONENET_REPLY_MSG_FAIL;
         goto build_response;
-    }
-
-    id_item = cJSON_GetObjectItem(root, "id");
-    if (id_item && cJSON_IsString(id_item))
-    {
-        msg_id = id_item->valuestring;
     }
 
     result_params = cJSON_CreateObject();
 
-    params = cJSON_GetObjectItem(root, "params");
+    params = cJSON_GetObjectItem(ctx.root, "params");
     if (params && cJSON_IsArray(params))
     {
         cJSON *item = RT_NULL;
@@ -289,59 +302,27 @@ static void onenet_reply_handle_property_get(const uint8_t *payload, size_t payl
     }
 
 build_response:
-    resp_str = onenet_reply_build_get_response(msg_id, code, msg, result_params);
-    if (root)
-    {
-        cJSON_Delete(root);
-    }
-    if (result_params)
-    {
-        cJSON_Delete(result_params);
-    }
-
-    if (resp_str)
-    {
-        *resp_data = (uint8_t *)ONENET_MALLOC(strlen(resp_str) + 1);
-        if (*resp_data)
-        {
-            strcpy((char *)*resp_data, resp_str);
-            *resp_size = strlen(resp_str);
-        }
-        cJSON_free(resp_str);
-    }
+    *resp_data = onenet_build_response_buffer(ctx.msg_id, ctx.code, ctx.msg, result_params, resp_size);
+    if (ctx.root) cJSON_Delete(ctx.root);
+    if (result_params) cJSON_Delete(result_params);
 }
 
 static void onenet_reply_handle_ota_inform(const uint8_t *payload, size_t payload_len,
                                            uint8_t **resp_data, size_t *resp_size)
 {
-    cJSON *root = RT_NULL;
-    cJSON *id_item = RT_NULL;
+    onenet_parse_ctx_t ctx = {0};
     cJSON *version_item = RT_NULL;
     cJSON *url_item = RT_NULL;
-    char *resp_str = RT_NULL;
-    const char *msg_id = "0";
-    int code = ONENET_REPLY_SUCCESS;
-    const char *msg = ONENET_REPLY_MSG_SUCCESS;
 
     LOG_I("OTA inform request: %.*s", (int)payload_len, payload);
 
-    root = cJSON_ParseWithLength((const char *)payload, payload_len);
-    if (!root)
+    if (!onenet_parse_request(payload, payload_len, &ctx, "OTA inform"))
     {
-        LOG_E("Failed to parse OTA inform JSON");
-        code = ONENET_REPLY_FAIL;
-        msg = ONENET_REPLY_MSG_FAIL;
         goto build_response;
     }
 
-    id_item = cJSON_GetObjectItem(root, "id");
-    if (id_item && cJSON_IsString(id_item))
-    {
-        msg_id = id_item->valuestring;
-    }
-
-    version_item = cJSON_GetObjectItem(root, "version");
-    url_item = cJSON_GetObjectItem(root, "url");
+    version_item = cJSON_GetObjectItem(ctx.root, "version");
+    url_item = cJSON_GetObjectItem(ctx.root, "url");
 
     if (ota_inform_cb)
     {
@@ -352,8 +333,8 @@ static void onenet_reply_handle_ota_inform(const uint8_t *payload, size_t payloa
         if (ret != RT_EOK)
         {
             LOG_W("OTA inform callback failed");
-            code = ONENET_REPLY_FAIL;
-            msg = ONENET_REPLY_MSG_FAIL;
+            ctx.code = ONENET_REPLY_FAIL;
+            ctx.msg = ONENET_REPLY_MSG_FAIL;
         }
         else
         {
@@ -366,22 +347,8 @@ static void onenet_reply_handle_ota_inform(const uint8_t *payload, size_t payloa
     }
 
 build_response:
-    resp_str = onenet_reply_build_response(msg_id, code, msg);
-    if (root)
-    {
-        cJSON_Delete(root);
-    }
-
-    if (resp_str)
-    {
-        *resp_data = (uint8_t *)ONENET_MALLOC(strlen(resp_str) + 1);
-        if (*resp_data)
-        {
-            strcpy((char *)*resp_data, resp_str);
-            *resp_size = strlen(resp_str);
-        }
-        cJSON_free(resp_str);
-    }
+    *resp_data = onenet_build_response_buffer(ctx.msg_id, ctx.code, ctx.msg, RT_NULL, resp_size);
+    if (ctx.root) cJSON_Delete(ctx.root);
 }
 
 void onenet_reply_process(onenet_reply_type_t type, const char *topic, const uint8_t *payload, size_t payload_len,
@@ -416,4 +383,137 @@ void onenet_reply_process(onenet_reply_type_t type, const char *topic, const uin
     {
         LOG_D("Response: %.*s", (int)*resp_size, *resp_data);
     }
+}
+
+rt_bool_t onenet_parse_value(cJSON *json, onenet_property_value_t *prop)
+{
+    if (!json || !prop)
+    {
+        return RT_FALSE;
+    }
+
+    switch (prop->type)
+    {
+    case ONENET_TYPE_INT32:
+        if (cJSON_IsNumber(json))
+        {
+            prop->value.int32_value = (rt_int32_t)json->valueint;
+            return RT_TRUE;
+        }
+        break;
+
+    case ONENET_TYPE_INT64:
+        if (cJSON_IsNumber(json))
+        {
+            prop->value.int64_value = (rt_int64_t)json->valuedouble;
+            return RT_TRUE;
+        }
+        break;
+
+    case ONENET_TYPE_FLOAT:
+        if (cJSON_IsNumber(json))
+        {
+            prop->value.float_value = (float)json->valuedouble;
+            return RT_TRUE;
+        }
+        break;
+
+    case ONENET_TYPE_DOUBLE:
+        if (cJSON_IsNumber(json))
+        {
+            prop->value.double_value = json->valuedouble;
+            return RT_TRUE;
+        }
+        break;
+
+    case ONENET_TYPE_DATE:
+        if (cJSON_IsNumber(json))
+        {
+            prop->value.date_value = (rt_int64_t)json->valuedouble;
+            return RT_TRUE;
+        }
+        break;
+
+    case ONENET_TYPE_BOOL:
+        if (cJSON_IsBool(json))
+        {
+            prop->value.bool_value = cJSON_IsTrue(json) ? RT_TRUE : RT_FALSE;
+            return RT_TRUE;
+        }
+        break;
+
+    case ONENET_TYPE_STRING:
+        if (cJSON_IsString(json))
+        {
+            prop->value.string_value = json->valuestring;
+            return RT_TRUE;
+        }
+        break;
+
+    case ONENET_TYPE_ENUM:
+        if (cJSON_IsNumber(json))
+        {
+            prop->value.enum_value = (rt_int32_t)json->valueint;
+            return RT_TRUE;
+        }
+        break;
+
+    default:
+        LOG_W("Unknown property type: %d", prop->type);
+        break;
+    }
+
+    LOG_W("Failed to parse value for type %d", prop->type);
+    return RT_FALSE;
+}
+
+cJSON *onenet_create_value(onenet_property_value_t *prop)
+{
+    cJSON *value = RT_NULL;
+
+    if (!prop)
+    {
+        return RT_NULL;
+    }
+
+    switch (prop->type)
+    {
+    case ONENET_TYPE_INT32:
+        value = cJSON_CreateNumber((double)prop->value.int32_value);
+        break;
+
+    case ONENET_TYPE_INT64:
+        value = cJSON_CreateNumber((double)prop->value.int64_value);
+        break;
+
+    case ONENET_TYPE_FLOAT:
+        value = cJSON_CreateNumber((double)prop->value.float_value);
+        break;
+
+    case ONENET_TYPE_DOUBLE:
+        value = cJSON_CreateNumber(prop->value.double_value);
+        break;
+
+    case ONENET_TYPE_DATE:
+        value = cJSON_CreateNumber((double)prop->value.date_value);
+        break;
+
+    case ONENET_TYPE_BOOL:
+        value = cJSON_CreateBool(prop->value.bool_value);
+        break;
+
+    case ONENET_TYPE_STRING:
+        value = cJSON_CreateString(prop->value.string_value);
+        break;
+
+    case ONENET_TYPE_ENUM:
+        value = cJSON_CreateNumber((double)prop->value.enum_value);
+        break;
+
+    default:
+        LOG_W("Unknown property type: %d", prop->type);
+        break;
+    }
+
+    return value;
 }
